@@ -2,7 +2,7 @@
 use serde::{Serialize,Deserialize};
 use rocket::serde::json::Json;
 use rocket::State;
-use std::sync::{atomic::{AtomicBool,AtomicUsize,Ordering},Mutex};
+use std::sync::{atomic::{AtomicUsize,Ordering},Mutex};
 #[macro_use] extern crate rocket;
 
 #[derive(Debug,Serialize,Deserialize)]
@@ -17,7 +17,7 @@ struct TodoListState {
     filestore: String
 }
 
-#[derive(Debug,Serialize,Deserialize)]
+#[derive(Debug,Serialize,Deserialize,Clone)]
 #[serde(crate = "rocket::serde")]
 struct TodoItem {
     id: usize,
@@ -31,16 +31,18 @@ fn rocket() -> _ {
     let todo_list_state = TodoListState {
         items: Mutex::new(todo_list.items),
         current_id: AtomicUsize::new(todo_list.current_id),
-        filestore: args[1]
+        filestore: args[1].clone()
     };
     rocket::build()
         .manage(todo_list_state)
-        .mount("/", routes![list])
+        .mount("/", routes![list,create])
 }
 
 #[get("/notes")]
-fn list(todo_list_state: &State<TodoList>) -> String {
-    serde_json::to_string::<TodoList>(todo_list_state).unwrap()
+fn list(todo_list_state: &State<TodoListState>) -> String {
+    let items = todo_list_state.items.lock().unwrap().clone();
+    let id = todo_list_state.current_id.load(Ordering::SeqCst);
+    serde_json::to_string::<TodoList>(&TodoList{items,current_id:id}).unwrap()
 }
 
 #[post("/notes", format = "json", data="<todo_item>")]
@@ -52,17 +54,16 @@ fn create(todo_item: Json<TodoItem>, todo_list_state: &State<TodoListState>) -> 
     };
     let mut items = todo_list_state.items.lock().unwrap();
     items.push(new_item);
-    write_todo_list(todo_list_state.filestore, items, todo_list_state.load(Ordering::SeqCst));
+    write_todo_list(&todo_list_state.filestore, &*items, todo_list_state.current_id.load(Ordering::SeqCst));
     format!("Added {}", todo_item.content)
-
 }
 
-fn write_todo_list(filestore: String, items: Vec<TodoItem>, id: usize) {
+fn write_todo_list(filestore: &String, items: &Vec<TodoItem>, id: usize) {
     let todo_list = TodoList {
-        items,
+        items: items.clone(),
         current_id: id
     };
-    match std::fs::File::create(&filestore) {
+    match std::fs::File::create(filestore) {
         Ok(f) => match serde_json::to_writer(f, &todo_list) {
             Ok(_) => println!("Serialized successfuly"),
             Err(x) => println!("Error when serializing {}", x)
